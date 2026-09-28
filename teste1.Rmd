@@ -1,29 +1,165 @@
 ---
-title: "teste1"
+title: "Análise casos PSA"
 output: html_document
 date: "2026-09-28"
 ---
+install.packages("devtools")
+require(devtools)
+install_github("pinanunes/Rempres") 
+install_github("pinanunes/rwahis")
+library(Rempres)
+library(rwahis)
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
+install.packages("dplyr")
+library(dplyr)
 
-## R Markdown
+devtools::install_github("tidyverse/lubridate")
+library(tidyverse)
+library(lubridate)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+install.packages("ggplot2")
+library(ggplot2)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+doenca<- "African swine fever"
 
-```{r cars}
-summary(cars)
-```
+#Passo 1 - Análise descritiva
+#CASOS NA EUROPA, GRÁFICO DE BARRAS
 
-## Including Plots
+dinicio<- "20250101" 
+dfim<- format(Sys.Date(), "%Y%m%d") 
+focos_PSA<-Empres.data(doenca,,startdate =  dinicio,enddate=dfim)
 
-You can also embed plots, for example:
+focos_europa<- focos_PSA|>
+  filter(region=="Europe")|>
+  select(id_event, country, latitude, longitude, locality, report_date, species, diagnosis_source)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
+n_country<- table(focos_europa$country)
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+tabela_n_country_EU<- as.data.frame(n_country)
+
+names(tabela_n_country_EU)<- c("Country", "Number of cases")
+
+barras_europa<- ggplot(tabela_n_country_EU, aes(x = Country, y = `Number of cases`, fill = Country)) +
+  geom_col() +
+  geom_text(aes(label = paste0(Country, " (", `Number of cases`, ")")), 
+            angle = 90,       
+            hjust = -0.1,      
+            size = 3) +
+  theme(
+    legend.position = "none",          
+    axis.text.x = element_blank(),      
+    axis.ticks.x = element_blank()
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.35))) +
+  labs(x = "European countries", y = "Number of PSA cases 2025-Now")
+
+
+#CASOS MUNDIAIS, MAPA DE CORES
+
+install.packages("rworldmap")
+library(rworldmap)
+mapa_mundo <- getMap(resolution = "low")
+
+tabela_mapa_mundo<- mapa_mundo@data
+
+head(mapa_mundo$ISO3)
+
+install.packages("countrycode")
+library(countrycode)
+
+tabela_codigos <- countrycode::codelist[, c("country.name.en", "iso3c", "iso.name.en")]
+
+focos_mundo <- focos_PSA |> select(id_event, country)
+
+tabela_paises_mundo <- as.data.frame(table(focos_mundo$country)) |>
+  rename(Country = Var1, cases = Freq) |>
+  mutate(iso3c = countrycode(Country, origin = "country.name", destination = "iso3c", custom_match = c(
+                               "Bosnia and Herzegovina"                          = "BIH",
+                               "China, Hong Kong Special Administrative Region"  = "HKG",
+                               "China, Taiwan Province of"                       = "TWN",
+                               "Taiwan (Province of China)"                      = "TWN",
+                               "Lao People's Democratic Republic"                = "LAO",
+                               "Moldova, Republic of"                            = "MDA",
+                               "Republic of Moldova"                             = "MDA",
+                               "Republic of Korea"                               = "KOR",
+                               "Viet Nam"                                        = "VNM")
+  ))|> 
+  group_by(iso3c) |>
+  summarise(Country = first(Country),
+            cases = sum(cases),
+            .groups = "drop") |> 
+  select(Country, cases, iso3c)
+
+mapa_dados <- joinCountryData2Map(
+  tabela_paises_mundo,
+  joinCode = "ISO3",
+  nameJoinColumn = "iso3c"
+) 
+
+
+install.packages("RColorBrewer")
+library(RColorBrewer)
+
+mapa_bonito<- layout(matrix(1:2, nrow = 1), widths = c(6, 1)) #defini dimensões
+
+cores <- brewer.pal(8, "RdPu")
+
+par(oma=c(0,0,0,0))
+mapa_cores<- mapCountryData(
+  mapa_dados, 
+  nameColumnToPlot = "cases",
+  catMethod = c(0, 1, 2, 10, 50, 500, 1000, 2500, 4753),
+  colourPalette = cores,
+  mapTitle = "Focos PSA 2025-Now",
+  missingCountryCol = "white",
+  borderCol = "grey40",
+  oceanCol= "lightblue",
+  addLegend= FALSE
+)
+
+legenda <- c("1", "2", "3 – 10", "11 – 50", "51 – 500", "501 – 1000", "1001 – 2500", "2501-4753")
+cores_legenda<- mapa_cores$colourPalette[seq_along(legenda)] 
+
+plot.new() 
+legend(
+  "left",
+  inset = -0.3,
+  legend = c(legenda, "Sem dados"),
+  fill   = c(cores_legenda, "white"),
+  title  = "Nº casos",
+  title.adj = 0.2,
+  bty    = "n",
+  cex    = 0.9,
+  xpd = NA
+)
+layout(1)
+
+
+
+#Passo 2 - Análise de séries temporais
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(pacman, tidyverse, openxlsx, forecast, modeltime, parsnip, rsample, timetk, xts, tidyquant, feasts, prophet)
+
+dinicio2<- "20000101" 
+dfim<- format(Sys.Date(), "%Y%m%d")
+todos_focos_PSA<-Empres.data(doenca,,startdate =  dinicio2, enddate=dfim)
+focos_simplificada<- todos_focos_PSA |> select(country, region, observation_date, report_date)
+
+focos_mes <- focos_simplificada |>
+  mutate(observation_date = as.Date(observation_date)) |>
+  filter(!is.na(observation_date)) |>
+  mutate(ds = floor_date(observation_date, "month")) |>
+  count(ds, name = "y") |>
+  complete(ds = seq(min(ds), max(ds), by = "month"), fill = list(y = 0))
+
+obs_trend <- prophet(focos_mes, seasonality.mode   = "additive",
+  yearly.seasonality = TRUE,
+  weekly.seasonality = FALSE, 
+  daily.seasonality  = FALSE
+) 
+obs_forecast <- predict(obs_trend)
+grafico_obs_trend<- prophet_plot_components(obs_trend, obs_forecast)
+
+library(timetk)
+grafico_linha<- focos_mes %>% plot_time_series(ds, y, .smooth = TRUE, .smooth_color = "#FFA500", .title = "PSA cases")
